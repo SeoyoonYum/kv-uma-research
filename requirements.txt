@@ -1,0 +1,7 @@
+# Pinned to the versions verified on the M4 measurement machine.
+# mlx-lm's API moves between versions (make_prompt_cache path, set_memory_limit,
+# get_peak_memory, ...) — see RESEARCH.md §6. Full freeze: results/logs/pip-freeze.txt.
+mlx==0.31.2
+mlx-lm==0.31.3
+numpy==2.4.6
+matplotlib==3.11.0

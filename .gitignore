@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# OS
+.DS_Store
+
+# Raw inputs and run logs are not versioned (results/csv and results/figures ARE)
+data/raw/
+results/logs/
+
+# Scratch
+*.tmp
+*.swp
