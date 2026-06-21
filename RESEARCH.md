@@ -51,10 +51,9 @@ NVIDIA 통합 메모리는 동기(업계가 UMA에 베팅) + 대조(그들은 C2
 - [x] 크로스오버 분석 — keep-and-read가 drop-and-recompute를 모든 N에서 압도(B*≈0.02–0.04 GB/s ≪ PCIe·UMA 대역폭).
       UMA-vs-PCIe 차이는 *eviction 경로*(메모리 압박)에 있다: PCIe는 KV를 CPU로 swap(~19ms, 보존), UMA는 swap 탈출구가 없어
       drop+recompute 강제(~12s) ≈ 600×@8192(1.5B); 크기로 ~1,587×(7B@4096)까지 확대. (recompute=실측, PCIe swap=모델값.)
-- [ ] Exp 2 (경합) / [ ] Exp 3 (정책 격차)
-- [ ] Go/No-Go 판단: 잠정 GO 방향 — PCIe 비용 모델이 깨지고 격차가 규모로 강화됨이 Exp1에서 확인. Exp2(경합)로 굳히기.
-- 현재 열린 질문: (1) KV 읽기 실효 대역폭이 큰 모델에서 더 낮은 이유(가중치 트래픽 경합? 잔여 발열?). (2) 7B@8192 클린 단일 점.
-  (3) Exp2 CPU 부하 강도/설계(STREAM류, P-코어 핀). (4) PCIe swap 수치는 모델값 — Exp4에서 실측 대조 필요.
+- [x] Exp 2 (경합) — CPU 대역폭 부하가 decode를 ~36–38% 느리게(~69GB/s, 단조 증가). powermetrics A/B로 대역폭/중재 경합 확정(GPU 클럭 유지·전력↑인데 throughput↓ = 메모리 stall, 전력·발열 throttle 아님). 첫 sweep 버그(측정창 직전 prefill이 부하 수명 잠식 → 과소측정) 정정. / [ ] Exp 3 (정책 격차)
+- [x] Go/No-Go 판단: **GO** — H1 강(Exp1 ~600–1,587× 격차) + H2 강(Exp2 ~38% 경합, 메커니즘 확정). 게이트 두 조건 충족.
+- 현재 열린 질문: (1) **N* 이동**엔 prefill-under-contention 측정 필요(decode만 쟀음 — 둘 다 같은 버스라 상대 민감도가 N* 이동을 결정). (2) KV 읽기 실효 대역폭이 큰 모델서 더 낮은 이유. (3) 7B@8192 클린 단일 점. (4) PCIe swap=모델값 — Exp4 실측 대조.
 
 ## 8. Go/No-Go (de-risk 게이트)
 계속: Exp1의 N*이 PCIe/N≈50 예측과 유의하게 다르거나, Exp2에 측정 가능한 경합 효과.

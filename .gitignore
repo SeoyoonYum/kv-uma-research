@@ -5,6 +5,10 @@ __pycache__/
 .venv/
 venv/
 
+# Compiled native helpers (build artifacts; the .c source is tracked)
+src/common/stream_load
+*.o
+
 # OS
 .DS_Store
 
