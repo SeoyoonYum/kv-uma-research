@@ -53,7 +53,7 @@ NVIDIA 통합 메모리는 동기(업계가 UMA에 베팅) + 대조(그들은 C2
       drop+recompute 강제(~12s) ≈ 600×@8192(1.5B); 크기로 ~1,587×(7B@4096)까지 확대. (recompute=실측, PCIe swap=모델값.)
 - [x] Exp 2 (경합) — CPU 대역폭 부하가 decode를 ~36–38% 느리게(~69GB/s, 단조 증가). powermetrics A/B로 대역폭/중재 경합 확정(GPU 클럭 유지·전력↑인데 throughput↓ = 메모리 stall, 전력·발열 throttle 아님). 첫 sweep 버그(측정창 직전 prefill이 부하 수명 잠식 → 과소측정) 정정. / [ ] Exp 3 (정책 격차)
 - [x] Go/No-Go 판단: **GO** — H1 강(Exp1 ~600–1,587× 격차) + H2 강(Exp2 ~38% 경합, 메커니즘 확정). 게이트 두 조건 충족.
-- 현재 열린 질문: (1) **N* 이동**엔 prefill-under-contention 측정 필요(decode만 쟀음 — 둘 다 같은 버스라 상대 민감도가 N* 이동을 결정). (2) KV 읽기 실효 대역폭이 큰 모델서 더 낮은 이유. (3) 7B@8192 클린 단일 점. (4) PCIe swap=모델값 — Exp4 실측 대조.
+- 현재 열린 질문: (1) **N* 이동 [답함]** — prefill 경합 거의 무반응(−0.5~+7.5%, compute-bound) vs decode ~38%(bandwidth-bound) → 경합 시 N*가 recompute 쪽 이동(~1.3–1.4×). Exp1 ~600×엔 못 미쳐 refine. 정책 레버=버스 경합 시 recompute 선호(PCIe엔 없음). (2) KV 읽기 실효 대역폭이 큰 모델서 더 낮은 이유. (3) 7B@8192 클린 단일 점. (4) PCIe swap=모델값 — Exp4 실측 대조.
 
 ## 8. Go/No-Go (de-risk 게이트)
 계속: Exp1의 N*이 PCIe/N≈50 예측과 유의하게 다르거나, Exp2에 측정 가능한 경합 효과.

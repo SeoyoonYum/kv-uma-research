@@ -12,3 +12,4 @@
 2026-06-21: Exp2 측정 버그 정정 — 첫 sweep(2.5–11.5%)은 측정창 직전 prefill이 CPU 부하 수명을 잠식(큰 N서 부하 조기 만료)해 과소측정. 캐시를 부하 전 빌드하도록 수정 → 정정값 ~36–38%, 프로브와 일치. ("짧은 컨텍스트가 더 민감"도 이 버그 아티팩트였음.)
 2026-06-21: H2 판정 정정 — 버그값 근거 "경합 약함"은 철회. H2 강하게 지지(~38% 실효). 단 N* *이동*은 prefill-under-contention 미측정이라 미결(decode·prefill 둘 다 같은 버스 → 상대 민감도 필요). Go/No-Go = GO(H1 강 + H2 강).
 2026-06-21: powermetrics passwordless sudo를 /usr/bin/powermetrics 한정으로 설정(/etc/sudoers.d/powermetrics). GPU 클럭/residency/전력 트레이스용(thermal.PowerMetricsLogger). 제거 가능.
+2026-06-21: Exp2 N*-이동 닫음(exp2_prefill_contention.py) — prefill(recompute)은 경합에 거의 무반응(−0.5% @N2048, +7.5% @N4096; compute-bound, 가중치 N토큰 재사용·산술강도 높음)인데 decode(keep)는 ~37–39%(bandwidth-bound, 토큰마다 전체 가중치+KV 재독). 비대칭 → 경합 시 keep이 recompute 대비 ~1.3–1.4× 상대적 비쌈 → **N\*가 recompute 쪽으로 이동(directionally 확정)**. 정책 레버: 버스 경합 시 recompute 선호 — PCIe 모델에 없는 UMA 고유. 단 1.3–1.4×는 Exp1 ~600–1,587×에 비해 작아 지배 비대칭은 안 뒤집음(refine). H2 3다리(실재·대역폭·비대칭) 완성.
