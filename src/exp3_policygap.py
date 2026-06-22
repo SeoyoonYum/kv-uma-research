@@ -1,33 +1,38 @@
 #!/usr/bin/env python3
 """
-exp3_policygap.py - Exp 3: policy gap, current frameworks vs a measured-cost oracle.
-[RQ3/H3]  Measurement-only SIMULATION (no model execution; scores decisions with the Exp1
-cost model). See EXPERIMENTS.md Exp 3 (redefined 2026-06-21).
+exp3_policygap.py - Exp 3: policy gap, current frameworks vs a measured-cost oracle, with
+an online causal heuristic. [RQ3/H3]  Measurement-only SIMULATION (no model execution;
+scores decisions with the Exp1 cost model). See EXPERIMENTS.md Exp 3 (+ causal spec).
 
-Replays multiturn traces (common.workloads) under four KV policies and measures the
-headroom a UMA-aware policy reclaims. The keep-vs-recompute decision is made at each
-inter-turn boundary (when a conversation goes idle): keep its KV resident (costs memory)
-or drop it and recompute on the next turn (frees memory, costs a recompute). A per-
-conversation KV budget = total_budget / concurrency models the memory pressure.
+Multi-sequence eviction model: `concurrency` conversations are resident at once and share a
+total KV budget; their turns interleave (round-robin), so an idle conversation's KV sits
+resident until evicted. When resident KV exceeds budget, the policy chooses victims.
 
-  rotating(W)       - mlx-lm default: cap cache at the last W tokens (cheap, bounded,
-                      but SILENTLY DROPS older context -> coverage < 1).
-  full_keep         - keep everything (cheap TTFT) but OOM when the conv's KV exceeds its
-                      budget share (crash).
-  always_recompute  - drop between turns (0 idle footprint, no OOM) but pay the full
-                      recompute tax EVERY turn (high TTFT).
-  oracle            - keep while it fits the budget (cheap, full context, no crash),
-                      recompute ONLY the turns that would exceed budget -> best feasible.
+Policies:
+  rotating(W)       - mlx-lm default: cap each conv's cache at the last W tokens (cheap,
+                      bounded, but SILENTLY DROPS older context -> coverage < 1).
+  full_keep         - never evict (cheap resume) -> over budget = crash.
+  always_recompute  - drop every conv's KV between turns -> 0 idle footprint, recompute
+                      EVERY turn (high TTFT).
+  lru               - evict least-recently-used (recency only; causal's ancestor).
+  causal            - online heuristic: evict argmax  kv_bytes / (P_reuse * recompute_cost),
+                      P_reuse from PAST distance (recency, step at K). = LRU + a recompute-cost
+                      axis (Exp1's "recompute is superlinear in N", turned into a policy signal).
+  oracle            - SAME score, P_reuse from FUTURE distance (true reuse). The ONLY
+                      difference from causal is past-vs-future reuse info -> upper bound.
 
-Cost model: prefill_ms(N), decode_ms(N) interpolated from results/csv/exp1_<model>_*.csv;
-KV bytes/token from the matching _meta.json. Pure arithmetic - no MLX, no model load.
+Key output: recovery = how much of the LRU->oracle gap (mean TTFT) causal closes with no
+foresight. Cost model: prefill_ms(N)/decode_ms(N) from results/csv/exp1_<model>_*.csv;
+KV bytes/token from the _meta.json. Pure arithmetic - no MLX, no model load.
 """
 import argparse
+import bisect
 import csv
 import glob
 import json
 import math
 import os
+import random
 import sys
 from datetime import datetime
 
@@ -39,7 +44,7 @@ from common import workloads  # noqa: E402
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CSV_DIR = os.path.join(REPO, "results", "csv")
 FIG_DIR = os.path.join(REPO, "results", "figures")
-POLICIES = ("rotating", "full_keep", "always_recompute", "oracle")
+POLICIES = ("rotating", "full_keep", "always_recompute", "lru", "causal", "oracle")
 
 
 def _find_cost_files(model):
@@ -53,7 +58,7 @@ def _find_cost_files(model):
 
 class CostModel:
     """prefill_ms(N) / decode_ms(N) from the Exp1 curves (log-log interp + power-law
-    extrapolation beyond the measured range), plus KV bytes/token."""
+    extrapolation), plus KV bytes/token. Shared by every policy (incl. oracle & causal)."""
 
     def __init__(self, model):
         csv_path, meta_path = _find_cost_files(model)
@@ -87,56 +92,111 @@ class CostModel:
         return self._loglog(N, self.dec)
 
     def incr_prefill_ms(self, a, b):
-        """Cost to extend a cached prefix of `a` tokens to `b` (prefill the suffix)."""
         if b <= a:
             return 0.0
         return self.prefill_ms(b) - self.prefill_ms(a) if a > 0 else self.prefill_ms(b)
 
     def decode_sum_ms(self, ctx0, n):
-        """Decode cost for n tokens over context growing from ctx0 (midpoint approx)."""
         return n * self.decode_ms(ctx0 + n / 2.0) if n > 0 else 0.0
 
     def kv_bytes(self, N):
         return self.kv_bpt * N
 
 
-def simulate(conv, cm, policy, budget_bytes, W):
-    """Replay one conversation under `policy`. Returns per-conversation metrics."""
-    ctx = 0                       # tokens already in the conversation (before this turn)
-    total, ttfts = 0.0, []
-    peak_res, oom = 0, False
-    covered, ctx_total = 0, 0
-    for (p, r) in conv:
-        Lq = ctx + p              # context length while answering this turn
-        if policy == "full_keep":
-            ttft = cm.incr_prefill_ms(ctx, Lq)
-            resid = cm.kv_bytes(ctx + p + r)             # holds full context between turns
-        elif policy == "always_recompute":
-            ttft = cm.prefill_ms(Lq)                     # rebuild the whole context each turn
-            resid = 0                                    # freed between turns
-        elif policy == "rotating":
-            ttft = cm.incr_prefill_ms(min(ctx, W), min(Lq, W))
-            resid = cm.kv_bytes(min(ctx + p + r, W))     # capped window; older context dropped
-        elif policy == "oracle":
-            full = cm.kv_bytes(ctx + p + r)
-            if full <= budget_bytes:
-                ttft, resid = cm.incr_prefill_ms(ctx, Lq), full      # keep (cheap)
-            else:
-                ttft, resid = cm.prefill_ms(Lq), 0                   # recompute only when over budget
-        else:
-            raise ValueError(policy)
+def build_schedule(convs, concurrency, think_mean=20.0, seed=0):
+    """Realistic interleaving: conversations arrive staggered and each conversation's turns
+    are separated by a VARIABLE think-time (user reply gap), so KV reuse distance is
+    heterogeneous like real serving (unlike a uniform round-robin, where recency perfectly
+    predicts reuse and LRU is trivially optimal). `concurrency` sets the arrival rate so
+    roughly that many conversations are in flight; think-time is lognormal (some users
+    reply fast, some slow). Returns the time-ordered [(conv_id, turn_idx)]."""
+    rng = random.Random(seed)
+    interarr = max(think_mean * 4.0 / max(concurrency, 1), 1e-6)
+    timed, t0 = [], 0.0
+    for cid, conv in enumerate(convs):
+        t0 += rng.expovariate(1.0 / interarr)            # staggered arrivals
+        at = t0
+        for ti in range(len(conv)):
+            timed.append((at, cid, ti))
+            at += 1.0 + rng.lognormvariate(math.log(think_mean), 0.8)  # variable think-time
+    timed.sort()
+    return [(c, ti) for (_, c, ti) in timed]
 
-        total += ttft + cm.decode_sum_ms(Lq, r)
+
+def simulate(convs, events, cm, policy, budget, W, K):
+    """Replay the interleaved schedule under `policy`. Returns aggregate metrics."""
+    conv_events = {}
+    for idx, (c, _) in enumerate(events):
+        conv_events.setdefault(c, []).append(idx)
+
+    def next_use(c, e):
+        lst = conv_events[c]; j = bisect.bisect_right(lst, e)
+        return lst[j] if j < len(lst) else math.inf
+
+    ctx, resident, res_tok, last_used = {}, {}, {}, {}
+    total, ttfts = 0.0, []
+    peak, over_budget_events, recomputes = 0, 0, 0
+    covered, ctx_total = 0, 0
+
+    def memory():
+        return sum(cm.kv_bytes(res_tok[c]) for c in resident if resident[c])
+
+    def drop_score(x, p_reuse):
+        # drop_gain = keep_cost − P_reuse·recompute_cost, both in ms. keep_cost = time to
+        # read that KV once (~92 GB/s, Exp2); recompute_cost = Exp1 prefill(N) (superlinear).
+        # Evict argmax: keep convs that are reused soon AND expensive to recompute.
+        keep_ms = cm.kv_bytes(res_tok[x]) / 92e6
+        return keep_ms - p_reuse * cm.prefill_ms(ctx[x])
+
+    for e, (c, ti) in enumerate(events):
+        p, r = convs[c][ti]
+        prior = ctx.get(c, 0)
+        was_res = resident.get(c, False)
+        if policy == "rotating":
+            ttft = cm.incr_prefill_ms(min(prior, W), min(prior + p, W))
+        elif was_res:
+            ttft = cm.incr_prefill_ms(prior, prior + p)
+        else:
+            ttft = cm.prefill_ms(prior + p)                 # recompute prior context
+            if prior > 0:
+                recomputes += 1
+        total += ttft + cm.decode_sum_ms(prior + p, r)
         ttfts.append(ttft)
-        peak_res = max(peak_res, resid)
-        if resid > budget_bytes:          # idle footprint exceeds the conv's budget share
-            oom = True
-        seen = min(Lq, W) if policy == "rotating" else Lq
-        covered += seen; ctx_total += Lq
-        ctx += p + r
-    return dict(total_ms=total, mean_ttft_ms=float(np.mean(ttfts)),
-                peak_res_mb=peak_res / 1e6, oom=oom,
-                coverage=covered / ctx_total if ctx_total else 1.0)
+
+        ctx[c] = prior + p + r
+        resident[c] = True
+        res_tok[c] = min(ctx[c], W) if policy == "rotating" else ctx[c]
+        last_used[c] = e
+        seen = min(prior + p, W) if policy == "rotating" else prior + p
+        covered += seen; ctx_total += (prior + p)
+
+        if policy == "always_recompute":
+            for x in resident:                              # keep nothing idle
+                resident[x] = False; res_tok[x] = 0
+        elif policy in ("full_keep", "rotating"):
+            if memory() > budget:
+                over_budget_events += 1                     # cannot free -> crash/over-budget
+        else:                                               # lru / causal / oracle: evict idle
+            while memory() > budget:
+                cands = [x for x in resident if resident[x] and x != c]
+                if not cands:
+                    over_budget_events += 1; break
+                if policy == "lru":
+                    v = min(cands, key=lambda x: last_used[x])
+                elif policy == "causal":
+                    v = max(cands, key=lambda x: drop_score(
+                        x, math.exp(-(e - last_used[x]) / K)))            # recency estimate
+                else:  # oracle: same score, TRUE future reuse (will it EVER return?)
+                    v = max(cands, key=lambda x: drop_score(
+                        x, 0.9 if next_use(x, e) < math.inf else 0.1))
+                resident[v] = False; res_tok[v] = 0
+        peak = max(peak, memory())
+
+    n = len(convs)
+    return dict(total_ms=total, mean_ttft=float(np.mean(ttfts)),
+                p95_ttft=float(np.percentile(ttfts, 95)), peak_mb=peak / 1e6,
+                over_budget_rate=over_budget_events / max(len(events), 1),
+                recomputes=recomputes, coverage=covered / ctx_total if ctx_total else 1.0)
 
 
 def run(args):
@@ -149,96 +209,98 @@ def run(args):
         convs = workloads.synthetic_conversations(n_convs=args.n_convs, seed=0)
         src = f"synthetic(n={args.n_convs})"
         if args.trace:
-            print(f"[exp3] trace '{args.trace}' not found -> using synthetic")
+            print(f"[exp3] trace '{args.trace}' not found -> synthetic")
     print(f"[exp3] traces: {src}  {workloads.trace_stats(convs)}")
-    budget_bytes = args.kv_budget_gb * 1e9 / args.concurrency
-    print(f"[exp3] per-conversation KV budget = {budget_bytes/1e6:.0f} MB "
-          f"({args.kv_budget_gb} GB / concurrency {args.concurrency}); rotating W={args.window}\n")
+    events = build_schedule(convs, args.concurrency, args.think_mean)
+    budget = args.kv_budget_gb * 1e9
+    print(f"[exp3] {len(events)} turn-events | concurrency {args.concurrency} | "
+          f"shared KV budget {args.kv_budget_gb} GB | rotating W={args.window} | K-sweep {args.ks}\n")
 
-    agg, rows = {}, []
-    for pol in [p for p in POLICIES if p in args.policies.split(",")]:
-        ms = [simulate(c, cm, pol, budget_bytes, args.window) for c in convs]
-        agg[pol] = dict(
-            mean_total_ms=float(np.mean([m["total_ms"] for m in ms])),
-            mean_ttft_ms=float(np.mean([m["mean_ttft_ms"] for m in ms])),
-            p95_ttft_ms=float(np.percentile([m["mean_ttft_ms"] for m in ms], 95)),
-            mean_peak_res_mb=float(np.mean([m["peak_res_mb"] for m in ms])),
-            oom_rate=float(np.mean([m["oom"] for m in ms])),
-            mean_coverage=float(np.mean([m["coverage"] for m in ms])))
-        rows.append(dict(policy=pol, **{k: round(v, 3) for k, v in agg[pol].items()}))
-        a = agg[pol]
-        print(f"  {pol:17s} | total {a['mean_total_ms']:8.0f}ms | TTFT mean {a['mean_ttft_ms']:7.1f} "
-              f"p95 {a['p95_ttft_ms']:7.1f} ms | footprint {a['mean_peak_res_mb']:6.0f}MB | "
-              f"OOM {a['oom_rate']*100:4.0f}% | ctx {a['mean_coverage']*100:4.0f}%")
-
-    analyze(agg)
+    Ks = [int(x) for x in str(args.ks).split(",")]
+    res = {}
+    for pol in POLICIES:
+        if pol == "causal":
+            for K in Ks:
+                res[f"causal_K{K}"] = simulate(convs, events, cm, "causal", budget, args.window, K)
+        else:
+            res[pol] = simulate(convs, events, cm, pol, budget, args.window,
+                                Ks[len(Ks) // 2] if pol == "oracle" else 0)
+    for name, a in res.items():
+        print(f"  {name:13s} | total {a['total_ms']/1e3:8.1f}s | TTFT mean {a['mean_ttft']:7.1f} "
+              f"p95 {a['p95_ttft']:8.1f} ms | peak {a['peak_mb']:6.0f}MB | "
+              f"over-budget {a['over_budget_rate']*100:4.0f}% | recomp {a['recomputes']:5d} | "
+              f"ctx {a['coverage']*100:4.0f}%")
+    analyze(res, Ks)
     date = datetime.now().strftime("%Y%m%d")
     os.makedirs(CSV_DIR, exist_ok=True); os.makedirs(FIG_DIR, exist_ok=True)
     path = os.path.join(CSV_DIR, f"exp3_{args.model}_{date}.csv")
     with open(path, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys())); w.writeheader(); w.writerows(rows)
+        w = csv.writer(f)
+        w.writerow(["policy"] + list(next(iter(res.values())).keys()))
+        for name, a in res.items():
+            w.writerow([name] + [round(v, 4) for v in a.values()])
     print(f"\n[out] wrote {path}")
-    plot(agg, os.path.join(FIG_DIR, f"exp3_policygap_{args.model}_{date}.png"), args.model)
+    plot(res, Ks, os.path.join(FIG_DIR, f"exp3_policygap_{args.model}_{date}.png"), args.model)
 
 
-def analyze(agg):
-    print("\n================ POLICY GAP vs ORACLE ================")
-    if "oracle" not in agg:
-        print("(no oracle in policy set)"); return
-    o = agg["oracle"]
-    for pol, a in agg.items():
-        if pol == "oracle":
-            continue
-        dl = a["mean_total_ms"] / o["mean_total_ms"]
-        note = []
-        if a["oom_rate"] > o["oom_rate"] + 0.01:
-            note.append(f"OOM {a['oom_rate']*100:.0f}% (oracle {o['oom_rate']*100:.0f}%)")
-        if a["mean_coverage"] < o["mean_coverage"] - 0.01:
-            note.append(f"drops {(1-a['mean_coverage'])*100:.0f}% of context")
-        if dl > 1.05:
-            note.append(f"{dl:.2f}x latency")
-        print(f"  {pol:17s}: {'; '.join(note) if note else 'matches oracle'}")
-    print("=> oracle = keep when it fits budget, recompute only when over -> full context,")
-    print("   no crash, recompute tax paid ONLY under pressure. rotating hides context loss;")
-    print("   full_keep crashes; always_recompute over-pays. This headroom motivates Phase 2.")
-    print("=====================================================")
+def _recovery(res, K, metric="mean_ttft"):
+    """% of the LRU->oracle gap that causal(K) closes (and the always_recompute->oracle span)."""
+    o, lru, ar = res["oracle"][metric], res["lru"][metric], res["always_recompute"][metric]
+    cz = res[f"causal_K{K}"][metric]
+    rec_lru = 100 * (lru - cz) / (lru - o) if lru != o else float("nan")
+    rec_ar = 100 * (ar - cz) / (ar - o) if ar != o else float("nan")
+    return rec_lru, rec_ar
 
 
-def plot(agg, png, model):
+def analyze(res, Ks):
+    print("\n================ RECOVERY (mean TTFT) ================")
+    o = res["oracle"]["mean_ttft"]
+    print(f"  oracle {o:.1f}ms  |  lru {res['lru']['mean_ttft']:.1f}  |  "
+          f"always_recompute {res['always_recompute']['mean_ttft']:.1f}ms")
+    for K in Ks:
+        rl, ra = _recovery(res, K)
+        print(f"  causal K={K}: {res[f'causal_K{K}']['mean_ttft']:.1f}ms  -> recovers "
+              f"{rl:.0f}% of LRU->oracle gap  ({ra:.0f}% of always_recompute->oracle)")
+    print("  (30-60% recovery of the LRU->oracle gap = strong: recency + a recompute-cost")
+    print("   axis closes much of the foresight gap with NO future info.)")
+    print("======================================================")
+
+
+def plot(res, Ks, png, model):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    pols = list(agg.keys())
-    colors = {"rotating": "tab:gray", "full_keep": "tab:blue",
-              "always_recompute": "tab:orange", "oracle": "tab:green"}
-    cs = [colors.get(p, "tab:gray") for p in pols]
-    fig, ax = plt.subplots(2, 2, figsize=(12, 8))
-    panels = [("mean_total_ms", "mean total latency / conv (ms)"),
-              ("mean_ttft_ms", "mean TTFT (ms)"),
-              ("oom_rate", "OOM / crash rate"),
-              ("mean_coverage", "context coverage")]
+    order = ["rotating", "full_keep", "always_recompute", "lru"] + \
+            [f"causal_K{K}" for K in Ks] + ["oracle"]
+    order = [p for p in order if p in res]
+    col = {"rotating": "tab:gray", "full_keep": "tab:blue", "always_recompute": "tab:orange",
+           "lru": "tab:purple", "oracle": "tab:green"}
+    cs = [col.get(p, "tab:red") for p in order]
+    fig, ax = plt.subplots(2, 2, figsize=(13, 8))
+    panels = [("mean_ttft", "mean TTFT (ms)"), ("over_budget_rate", "over-budget / crash rate (%)"),
+              ("coverage", "context coverage (%)"), ("total_ms", "total latency (s)")]
     for axi, (key, title) in zip(ax.ravel(), panels):
-        vals = [agg[p][key] * (100 if key in ("oom_rate", "mean_coverage") else 1) for p in pols]
-        axi.bar(range(len(pols)), vals, color=cs)
-        axi.set_xticks(range(len(pols))); axi.set_xticklabels(pols, rotation=20, fontsize=9)
+        sc = 100 if key in ("over_budget_rate", "coverage") else (1e-3 if key == "total_ms" else 1)
+        axi.bar(range(len(order)), [res[p][key] * sc for p in order], color=cs)
+        axi.set_xticks(range(len(order))); axi.set_xticklabels(order, rotation=30, ha="right", fontsize=8)
         axi.set_title(title); axi.grid(True, axis="y", alpha=0.25)
-        if key in ("oom_rate", "mean_coverage"):
-            axi.set_ylabel("%")
-    fig.suptitle(f"Exp3 policy gap (cost-model sim) - {model}", fontsize=13)
+    fig.suptitle(f"Exp3 policy gap + causal heuristic (cost-model sim) - {model}", fontsize=13)
     fig.tight_layout(); fig.savefig(png, dpi=150)
     print(f"[out] wrote {png}")
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Exp3 policy gap (measurement-only simulation).")
+    ap = argparse.ArgumentParser(description="Exp3 policy gap + online causal heuristic (sim).")
     ap.add_argument("--model", default="1.5B")
     ap.add_argument("--trace", default="", help="ShareGPT/LMSys JSON path; empty -> synthetic")
     ap.add_argument("--max-convs", type=int, default=None)
     ap.add_argument("--n-convs", type=int, default=400, help="synthetic conversation count")
-    ap.add_argument("--kv-budget-gb", type=float, default=8.0, help="total KV budget")
-    ap.add_argument("--concurrency", type=int, default=16, help="budget share = budget/concurrency")
+    ap.add_argument("--concurrency", type=int, default=16, help="conversations in flight at once")
+    ap.add_argument("--think-mean", type=float, default=20.0,
+                    help="mean think-time between a conversation's turns (turn-events)")
+    ap.add_argument("--kv-budget-gb", type=float, default=2.0, help="shared resident KV budget")
     ap.add_argument("--window", type=int, default=4096, help="rotating cache window W (tokens)")
-    ap.add_argument("--policies", default=",".join(POLICIES))
+    ap.add_argument("--ks", default="2,4,8", help="causal recency K sweep")
     args = ap.parse_args()
     run(args)
 

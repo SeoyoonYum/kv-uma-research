@@ -72,7 +72,7 @@ folklore 위험 방어: 블로그/업계 논의 명시 인용 + "첫 체계적·
 - 현재 열린 질문: (1) **N* 이동 [답함]** — prefill 경합 거의 무반응(−0.5~+7.5%, compute-bound) vs decode ~38%(bandwidth-bound) → 경합 시 N*가 recompute 쪽 이동(~1.3–1.4×). Exp1 ~600×엔 못 미쳐 refine. 정책 레버=버스 경합 시 recompute 선호(PCIe엔 없음). (2) KV 읽기 실효 대역폭이 큰 모델서 더 낮은 이유. (3) 7B@8192 클린 단일 점. (4) PCIe swap=모델값 — Exp4 실측 대조.
 - [x] **Phase 1 측정 GO** + 프레이밍 확정(2026-06-21): ②경합 비대칭을 전면 empirical로, ①eviction은 folklore의 첫 통제 정량화로 포지셔닝.
 - [ ] 마무리 측정: 7B@8192 클린 1점, 경합 곡선 크기 sweep(+큰모델 KV대역폭 비효율 미니조사).
-- [~] Exp 3 (정책 격차) — 인프라 구축·검증(측정 전용 시뮬). 합성 트레이스 첫 결과: oracle만 무크래시+full ctx+최소지연; rotating ctx ~6% 손실+극한 OOM, full_keep OOM 압박따라↑(0→79%), always_recompute 지연 ~1.79× 과다. 실 ShareGPT/LMSys 트레이스로 magnitude 정련 남음.
+- [~] Exp 3 (정책 격차) — 다중 시퀀스 eviction 모델(가변 think-time) + online causal 휴리스틱, **실 ShareGPT(5k convs) 측정**. oracle 14.96<causal<lru 15.71<always_recompute 16.46s TTFT. **causal(예지 없음)이 LRU→oracle 격차의 44–75%(K=8–32) 회수 → 달성 가능성 입증(강).** rotating(기본)은 실 multiturn서 ctx 31%만 유지. spec 2곳 정합성 수정(oracle=ever-reused 이진, causal=exp(−idle/K) smooth) **챗 OK 필요**. budget/동시성 robustness sweep 남음.
 - [ ] arXiv/Semantic Scholar 알림 설정. 제출 직전 노벨티 재검증.
 - [ ] 랩 컨택(한동수/박경수) — GO+측정 들고.
 

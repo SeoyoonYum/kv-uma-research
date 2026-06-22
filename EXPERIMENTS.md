@@ -33,6 +33,20 @@ sweep: N∈[128,256,512,1024,2048,4096,8192]; 모델 0.5B/1.5B/3B/7B(4bit).
 범위: **측정까지만. 정책 *구현*은 Phase 2. 시스템 구현으로 새지 말 것.**
 산출: 정책별 비교 표 + 격차 플롯.
 
+### online causal 휴리스틱 (Exp3, 측정 전용) [추가 2026-06-22]
+목적: 예지 없는 단순 정책이 oracle 격차의 일부를 회수함을 입증(달성 가능성). oracle과 동일 비용 함수, 입력만 다름.
+eviction 트리거(메모리 예산 초과로 KV 비워야 할 때) 시, 각 후보 시퀀스 점수:
+  drop_gain(seq) = keep_cost(seq) − P_reuse(seq) × recompute_cost(seq)
+  - keep_cost      = KV 점유 메모리 (2·layers·kv_heads·head_dim·N·dtype_bytes)
+  - recompute_cost = Exp1 prefill(N) 비용곡선 룩업
+  - P_reuse        = 최근성 근사. 첫 버전: 계단함수(마지막 사용 ≤ K턴 → 높음, 아니면 낮음). K 작은 sweep(2/4/8).
+drop_gain 큰 순서로 drop, 예산 충족까지.
+대조군(최종): rotating(mlx-lm 기본) / full_keep / always_recompute / oracle(상한) / causal(이 정책). [+LRU = causal의 recency-only 조상, 참조용]
+지표(동일): TTFT, inter-token latency, peak memory, throughput, OOM/크래시율.
+핵심 산출: **회수율 = causal이 oracle 격차의 몇 %를 회수하나** + rotating/full_keep/always_recompute 대비 우위.
+주의: 첫 버전 정교화 금지. recency는 계단함수로 충분. 학습/예측 기반 확장은 Phase2.
+검증: oracle과 causal이 *정확히 같은 비용 함수* 사용(차이는 P_reuse 입력뿐); recompute_cost가 Exp1 prefill(N) 곡선을 룩업.
+
 ## Exp 4 — 크로스아키 대조점  [RQ4]  (선택, Phase 2 즈음)
 목표: crossover가 통합 메모리 스펙트럼을 따라 *이동*함을 보임(풀 시스템 이식 X, 곡선만).
 방법: Exp1 비용 곡선을 클라우드 분리형 GPU 한 대(PCIe; A10/4090)에서 재현 → N*_PCIe.
