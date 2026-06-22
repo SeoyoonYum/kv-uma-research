@@ -47,6 +47,11 @@ drop_gain 큰 순서로 drop, 예산 충족까지.
 주의: 첫 버전 정교화 금지. recency는 계단함수로 충분. 학습/예측 기반 확장은 Phase2.
 검증: oracle과 causal이 *정확히 같은 비용 함수* 사용(차이는 P_reuse 입력뿐); recompute_cost가 Exp1 prefill(N) 곡선을 룩업.
 
+### vllm-metal 비교군 추가 [2026-06-22]
+최종 대조군에 vllm-metal(또는 vllm-mlx) paged-KV + 기본 eviction(LRU/recompute-default)을 같은 멀티턴 트레이스에서 *실측*(실 엔진 행동 관찰)해 추가 — "SOTA 서빙 엔진조차 단일 풀 비용 구조를 무시해 흘린다"(mlx-lm rotating보다 강한 baseline).
+최종 대조군: rotating(mlx-lm) / full_keep / always_recompute / **vllm-metal paged+LRU** / oracle(상한) / causal(우리). [+lru = 시뮬레이션상 vLLM eviction의 proxy, 이미 포함]
+주의: 실 엔진 측정만(Phase 2b 구현과 별개). 설치·실행이 무거우면 우선순위 낮춰 실 트레이스 Exp3(mlx 정책+oracle+causal) 먼저 완성하고 vllm-metal 비교군은 그다음.
+
 ## Exp 4 — 크로스아키 대조점  [RQ4]  (선택, Phase 2 즈음)
 목표: crossover가 통합 메모리 스펙트럼을 따라 *이동*함을 보임(풀 시스템 이식 X, 곡선만).
 방법: Exp1 비용 곡선을 클라우드 분리형 GPU 한 대(PCIe; A10/4090)에서 재현 → N*_PCIe.
