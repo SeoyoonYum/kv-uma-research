@@ -52,6 +52,11 @@ drop_gain 큰 순서로 drop, 예산 충족까지.
 최종 대조군: rotating(mlx-lm) / full_keep / always_recompute / **vllm-metal paged+LRU** / oracle(상한) / causal(우리). [+lru = 시뮬레이션상 vLLM eviction의 proxy, 이미 포함]
 주의: 실 엔진 측정만(Phase 2b 구현과 별개). 설치·실행이 무거우면 우선순위 낮춰 실 트레이스 Exp3(mlx 정책+oracle+causal) 먼저 완성하고 vllm-metal 비교군은 그다음.
 
+### Exp3 보고 [갱신 2026-06-22, 승인]
+- 헤드라인 = recovery-vs-K **곡선**(단일 K 아님). 본문 강조 K=8~16.
+- baseline 표기: lru = "현행 엔진의 recency-기반 eviction을 *대표*"(vLLM proxy로 단정 금지).
+- formulation(승인): oracle P_reuse=ever-reused(이진), causal P_reuse=exp(−idle/K), 동일 drop_gain=keep_ms−P_reuse×prefill(N). 유도 과정(naive 점수 실패→이 유도)을 방법론으로 명시. (근거 DECISIONS 2026-06-22 ★)
+
 ## Exp 4 — 크로스아키 대조점  [RQ4]  (선택, Phase 2 즈음)
 목표: crossover가 통합 메모리 스펙트럼을 따라 *이동*함을 보임(풀 시스템 이식 X, 곡선만).
 방법: Exp1 비용 곡선을 클라우드 분리형 GPU 한 대(PCIe; A10/4090)에서 재현 → N*_PCIe.
@@ -64,3 +69,11 @@ drop_gain 큰 순서로 drop, 예산 충족까지.
 baseline: rotating, LRU, full-keep, always-recompute (+ Exp3 오라클을 상한으로).
 지표: Exp3 + 정책 자체 오버헤드(가벼워야 함).
 범위: 단일 풀 UMA; 멀티턴/agentic(진짜 통증); 긴 컨텍스트; 발열 효과.
+
+### Phase 2a [신규 명세 2026-06-22 — mlx-lm 실 구현]
+목표: Exp3 시뮬로 검증한 causal 정책을 *실제 mlx-lm KVCache에 구현*해 진짜 모델 돌리며 재현 → "정책이 실제 동작"(워크샵 격상: 측정 → 측정+정책).
+방법: mlx-lm KVCache/RotatingKVCache 상속·후킹 → eviction 시점에 drop_gain 점수로 victim 선택(시뮬과 동일 공식). 실 멀티턴(make_prompt_cache prefix 재사용) 돌리며 측정.
+baseline: rotating(mlx-lm 기본)/full_keep/always_recompute/causal(우리). 지표: TTFT·ITL·peak mem·throughput·OOM. 시뮬 recovery%와 실측 비교.
+난이도: 중간(이식; 알고리즘 검증됨). 마찰=실 멀티턴 트리거·16GB OOM 통제·시뮬-실측 갭 해석.
+off-ramp: 실측이 시뮬과 크게 어긋나거나 16GB 벽이면 그것도 발견(시뮬-실측 갭/메모리 제약 본질적)으로 기록, Phase 1만으로 워크샵 제출. 벽에 머리 박지 말 것.
+주의: Phase 2a=단일 사용자·순차 맥락. 배칭/실 서빙 엔진 검증은 Phase 2b(vllm-metal, 랩 조건부).
