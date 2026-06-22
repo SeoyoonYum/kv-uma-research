@@ -73,6 +73,7 @@ folklore 위험 방어: 블로그/업계 논의 명시 인용 + "첫 체계적·
 - [x] **Phase 1 측정 GO** + 프레이밍 확정(2026-06-21): ②경합 비대칭을 전면 empirical로, ①eviction은 folklore의 첫 통제 정량화로 포지셔닝.
 - [ ] 마무리 측정: 7B@8192 클린 1점, 경합 곡선 크기 sweep(+큰모델 KV대역폭 비효율 미니조사).
 - [~] Exp 3 (정책 격차) — 다중 시퀀스 eviction 모델(가변 think-time) + online causal 휴리스틱, **실 ShareGPT(5k convs) 측정**. oracle 14.96<causal<lru 15.71<always_recompute 16.46s TTFT. **causal(예지 없음)이 LRU→oracle 격차의 44–75%(K=8–32) 회수 → 달성 가능성 입증(강).** rotating(기본)은 실 multiturn서 ctx 31%만 유지. spec 2곳 정합성 수정(oracle=ever-reused 이진, causal=exp(−idle/K) smooth) **챗 OK 필요**. budget robustness 확인됨(2/6GB 모두 LRU→oracle 41–83% 회수). vllm-metal 비교군=실엔진 보류(Docker-Mac Metal 패스스루 불가; 시뮬 lru가 proxy).
+- [~] Phase 2a (causal 실 구현) — `policy/causal_cache.py`: mlx-lm `LRUPromptCache` 서브클래스, eviction victim을 drop_gain으로 교체(baseline=미변경 LRUPromptCache 실코드). 스모크 통과(eviction 트리거+victim=argmax drop_gain, stock LRU와 다름). 다음: 환경통제(앱 종료·free% 기록)+필터 ShareGPT×동시성 실측 → 실측 회수율 vs 시뮬(50~92%). 7B@8192 throttle 문서화·경합 크기-무관 마무리 측정 완료.
 - [ ] arXiv/Semantic Scholar 알림 설정. 제출 직전 노벨티 재검증.
 - [ ] 랩 컨택(한동수/박경수) — GO+측정 들고.
 
