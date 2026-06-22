@@ -1,0 +1,5 @@
+policy,mean_total_ms,mean_ttft_ms,p95_ttft_ms,mean_peak_res_mb,oom_rate,mean_coverage
+rotating,38308.213,129.33,218.788,90.902,0.0,0.944
+full_keep,38886.459,161.093,272.902,121.491,0.003,1.0
+always_recompute,69611.066,2319.179,6665.697,0.0,0.0,1.0
+oracle,38972.328,163.295,272.902,121.468,0.0,1.0

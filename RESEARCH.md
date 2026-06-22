@@ -19,12 +19,28 @@ PCIe 분리형 비용 모델(FlexGen LP, vLLM swap-vs-recompute)은 PCIe 티어 
 - keep-vs-recompute crossover N*이 PCIe 예측 및 하드웨어-무관 N≈50(KV-Direct)과 다르다.
 - 공유 버스의 CPU/GPU 대역폭 *경합*(Apple Silicon에서 미측정)이 N*을 더 이동시킨다.
 
-## 4. 포지셔닝 / 프레이밍
-"통합 메모리"는 스펙트럼: 단일 풀 소비자(Apple/모바일/iGPU) ↔ 2풀 코히런트 데이터센터
-(NVIDIA GH200/GB200, HBM+LPDDR over NVLink-C2C). 둘 다 PCIe 가정을 깨되 방식이 다름.
-우리는 단일 풀 끝(전송→0, 가장 깨끗한 극한, 접근 가능, 미탐구)을 판다.
-NVIDIA 통합 메모리는 동기(업계가 UMA에 베팅) + 대조(그들은 C2C 전송 최적화, 단일 풀엔 없음)로만 쓰고,
-직접 평가하지 않는다. Apple Silicon = 전송=0 한계 케이스.
+## 4. 포지셔닝 / 프레이밍 [개정 2026-06-21]
+논문 한 줄: 단일 풀 통합 메모리에선 KV 관리 *결정 구조*가 다르다 — offload 티어가 붕괴해 eviction이 강제 recompute가 되고(통제 측정 600~1600×, 모델 크기로 악화), PCIe엔 없던 새 축(CPU/GPU 버스 경합: decode −38%, recompute 면역)이 생긴다. 우리는 이를 처음으로 통제·메커니즘 수준에서 측정하고, PCIe 시대 비용 모델이 표현 못 하는 결정 모델로 재유도하며, 현행 프레임워크가 이를 무시함을 보인다.
+
+도입부 5비트:
+1. 동기: UMA는 떠오르는 패러다임(Apple 소비자 ↔ NVIDIA GH200/GB200). 지배 비용 모델(FlexGen LP, vLLM swap/recompute)은 PCIe 분리 티어 전제.
+2. 갭: 실무자는 UMA 메모리 압박이 recompute를 강제함을 안다(folklore/블로그). 그러나 통제 측정·메커니즘·비용 모델·정책 함의가 없다. (folklore를 명시적으로 인정하고 시작)
+3. 결과1(엄밀성): eviction-cost 붕괴를 체계적으로 측정 — 600~1600×, 모델 크기로 스케일. offload 옵션 퇴화.
+4. 결과2(신규, 전면): 미측정 효과 측정 — CPU/GPU 버스 경합(−38%, powermetrics로 발열 아님 확정) + recompute 면역 비대칭 = PCIe엔 없는 새 결정 축.
+5. 함의: 현행(rotating, recompute-default)은 이 구조 무시 → 정량 격차(Exp3) → UMA-native 정책 동기(Phase2).
+
+기여:
+- 단일 풀 UMA의 KV 결정 공간 재유도(offload 퇴화 → keep-vs-recompute 환원).
+- eviction-as-recompute 비용의 첫 통제·모델스케일 측정(600~1600×, confound 분리).
+- Apple Silicon decode 중 CPU/GPU 버스 경합의 첫 측정 + 메커니즘 + recompute 면역 비대칭(actionable 정책 레버).
+- 현행 프레임워크가 이를 흘림(정책 격차).
+
+folklore 위험 방어: 블로그/업계 논의 명시 인용 + "첫 체계적·통제·메커니즘 측정 + 비용 모델"로 포지셔닝; bare "비싸다" 대신 메커니즘+비용모델+경합 측정 앞세움; 모델 스케일링(329→1587×)·경합 비대칭을 비자명 결과로 강조.
+
+## 4b. 노벨티 / 관련연구 델타
+- folklore(인용): backend.ai / touchdown-labs / min.io 블로그(eviction→recompute, UMA working-set), arXiv 2605.05699(UMA bandwidth 역전, quant).
+- 인접·대조: arXiv 2501.16909(NVIDIA GPU 내부 대역폭 간섭, 다른 setting), arXiv 2508.08531(Apple Silicon 단일워크로드 대역폭 프로파일), KVSwap 2511.11907(on-device disk offload), vllm-mlx 2601.19139(UMA 서빙, generic LRU), Learning-to-Evict 2602.10238(하드웨어-무관 RL eviction — 하드웨어-인지 피벗 시 경쟁).
+- 우리 델타: 통제 측정 + CPU/GPU 버스 경합 비대칭 + no-PCIe 결정 모델 재유도.
 
 ## 5. 하드웨어 (실험 플랫폼이자 연구 대상)
 - M4 MacBook Air, 16GB 통합 메모리, 10코어(4P+6E), ~120GB/s, 팬리스.
@@ -54,6 +70,11 @@ NVIDIA 통합 메모리는 동기(업계가 UMA에 베팅) + 대조(그들은 C2
 - [x] Exp 2 (경합) — CPU 대역폭 부하가 decode를 ~36–38% 느리게(~69GB/s, 단조 증가). powermetrics A/B로 대역폭/중재 경합 확정(GPU 클럭 유지·전력↑인데 throughput↓ = 메모리 stall, 전력·발열 throttle 아님). 첫 sweep 버그(측정창 직전 prefill이 부하 수명 잠식 → 과소측정) 정정. / [ ] Exp 3 (정책 격차)
 - [x] Go/No-Go 판단: **GO** — H1 강(Exp1 ~600–1,587× 격차) + H2 강(Exp2 ~38% 경합, 메커니즘 확정). 게이트 두 조건 충족.
 - 현재 열린 질문: (1) **N* 이동 [답함]** — prefill 경합 거의 무반응(−0.5~+7.5%, compute-bound) vs decode ~38%(bandwidth-bound) → 경합 시 N*가 recompute 쪽 이동(~1.3–1.4×). Exp1 ~600×엔 못 미쳐 refine. 정책 레버=버스 경합 시 recompute 선호(PCIe엔 없음). (2) KV 읽기 실효 대역폭이 큰 모델서 더 낮은 이유. (3) 7B@8192 클린 단일 점. (4) PCIe swap=모델값 — Exp4 실측 대조.
+- [x] **Phase 1 측정 GO** + 프레이밍 확정(2026-06-21): ②경합 비대칭을 전면 empirical로, ①eviction은 folklore의 첫 통제 정량화로 포지셔닝.
+- [ ] 마무리 측정: 7B@8192 클린 1점, 경합 곡선 크기 sweep(+큰모델 KV대역폭 비효율 미니조사).
+- [~] Exp 3 (정책 격차) — 인프라 구축·검증(측정 전용 시뮬). 합성 트레이스 첫 결과: oracle만 무크래시+full ctx+최소지연; rotating ctx ~6% 손실+극한 OOM, full_keep OOM 압박따라↑(0→79%), always_recompute 지연 ~1.79× 과다. 실 ShareGPT/LMSys 트레이스로 magnitude 정련 남음.
+- [ ] arXiv/Semantic Scholar 알림 설정. 제출 직전 노벨티 재검증.
+- [ ] 랩 컨택(한동수/박경수) — GO+측정 들고.
 
 ## 8. Go/No-Go (de-risk 게이트)
 계속: Exp1의 N*이 PCIe/N≈50 예측과 유의하게 다르거나, Exp2에 측정 가능한 경합 효과.

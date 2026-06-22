@@ -23,15 +23,14 @@ sweep: N∈[128,256,512,1024,2048,4096,8192]; 모델 0.5B/1.5B/3B/7B(4bit).
 지표: decode tok/s, 실효 GB/s, (a) 대비 둔화, 경합 하 재측정 N*.
 통제: CPU 부하 P-코어 핀, 강도 sweep, 발열 통제 특히 중요.
 산출: 경합 곡선(decode tok/s vs CPU 부하 강도) + N* 이동 표.
+노트(writeup, 2026-06-21): 경합 비대칭이 논문의 가장 깨끗한 노벨티 → writeup은 메커니즘(powermetrics A/B, 발열 아님) + recompute 면역 비대칭 + 정책 레버를 앞세울 것. [실측 완료: decode −36~38%; prefill 면역(−0.5~+7.5%); N*가 recompute 쪽 ~1.3–1.4× 이동.]
 
-## Exp 3 — 정책 격차: 현행 프레임워크 vs 오라클  [RQ3/H3]  (정책 동기)
-목표: UMA 비용 구조 기준, 현행 실제 정책이 성능을 흘리고 있음을 정량화.
-방법: 멀티턴 챗 트레이스(ShareGPT/LMSys-Chat, 컨텍스트 다양) 재생 —
-  (a) mlx-lm 기본 rotating; (b) full-keep; (c) always-recompute; (d) 오라클 = Exp1/2의 측정 비용모델로
-  매 결정 keep/recompute 싼 쪽 선택.
-지표: TTFT, inter-token latency, peak memory, throughput, OOM/크래시 발생률.
-분석: 기본↔오라클 격차 = 정책이 회수할 헤드룸. 격차가 큰 구간(메모리 압박, 긴 멀티턴)? 기본이 OOM/패닉
-  나는 데서 오라클은 안 나나?
+## Exp 3 — 정책 격차: 현행 프레임워크 vs 오라클  [RQ3/H3]  (정책 동기) [재정의 2026-06-21]
+목표: 현행 프레임워크가 *재유도된 UMA 결정 구조*(offload 붕괴 + 경합 축)를 무시해서 흘리는 양을 정량화 → UMA-native 정책의 동기.
+방법: 멀티턴 트레이스(ShareGPT/LMSys-Chat) 재생 — (a) mlx-lm 기본 rotating; (b) full-keep; (c) always-recompute;
+  (d) 오라클 = Exp1/2 측정 비용모델로 매 결정 최저비용 선택(=상한).
+지표: TTFT, inter-token latency, peak memory, throughput, OOM/크래시 발생률. 기본↔오라클 격차 = 정책이 회수할 헤드룸.
+범위: **측정까지만. 정책 *구현*은 Phase 2. 시스템 구현으로 새지 말 것.**
 산출: 정책별 비교 표 + 격차 플롯.
 
 ## Exp 4 — 크로스아키 대조점  [RQ4]  (선택, Phase 2 즈음)
