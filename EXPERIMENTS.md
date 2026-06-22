@@ -77,3 +77,11 @@ baseline: rotating(mlx-lm 기본)/full_keep/always_recompute/causal(우리). 지
 난이도: 중간(이식; 알고리즘 검증됨). 마찰=실 멀티턴 트리거·16GB OOM 통제·시뮬-실측 갭 해석.
 off-ramp: 실측이 시뮬과 크게 어긋나거나 16GB 벽이면 그것도 발견(시뮬-실측 갭/메모리 제약 본질적)으로 기록, Phase 1만으로 워크샵 제출. 벽에 머리 박지 말 것.
 주의: Phase 2a=단일 사용자·순차 맥락. 배칭/실 서빙 엔진 검증은 Phase 2b(vllm-metal, 랩 조건부).
+
+### Phase 2a 워크로드 설계 [2026-06-22 확정]
+구현(후킹, #4 정찰): mlx-lm LRUPromptCache 서브클래스, victim 선택(_lru.pop)을 drop_gain으로 교체. drop_gain(seq)=keep_ms−P_reuse×prefill_ms(N), 입력 모두 캐시 엔트리에 존재(nbytes→keep_ms via 대역폭, len(tokens)→recompute=Exp1 prefill 룩업, LRU 위치→recency→P_reuse=exp(−idle/K)). baseline=미변경 mlx-lm LRUPromptCache(실제 코드, proxy 아님). 가능하면 oracle 실측 변형(ever-reused) 추가.
+워크로드: Exp3 ShareGPT 트레이스를 ≤8k 토큰 필터(극단꼬리 제외=통제) + 수십~수백 대화. 압박=동시성(KV 예산 공유)+예산 상한 작게(1~2GB) 인위 설정 — **절대 16GB 한계까지 밀지 말 것**(예산을 작게 걸어 통제 압박). 모델=1.5B-4bit 고정.
+측정: TTFT·ITL·peak mem·OOM·throughput. baseline vs ours(vs oracle). 핵심=실측 회수율 vs 시뮬(50~92%). K=8~16. 통제: 1.5B 단독(GPU 다른 작업 금지=Exp2 오염 방지)·mx.eval·조건 인터리브+cooldown.
+환경 통제(16GB 필수): 실험 전 무거운 앱(브라우저/Slack/Docker) 종료, memory_pressure free%(이상 ≥60%) 확인·기록(재현성).
+정직한 단서: Phase 2a는 16GB 제약상 Exp3 부분집합(길이필터·통제예산·작은샘플). 절대 숫자는 Exp3와 다를 수 있으나 같은 샘플·압박서 baseline↔ours↔oracle 상대 회수율로 시뮬 검증.
+off-ramp: 실측≠시뮬 크게 어긋나면 "시뮬-실측 갭"을 발견으로 기록·Phase 1 제출. OOM 통제 불가/재현 안 되면 "16GB 실구동 측정 한계" 기록·시뮬(Exp3) 주결과 유지. 어느 쪽이든 발견 전환, Phase 1 안전판.
