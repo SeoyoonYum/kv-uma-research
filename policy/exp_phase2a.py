@@ -99,19 +99,28 @@ def run(args):
     print(f"[exp2a] {len(events)} turn-events | concurrency {args.concurrency} | "
           f"KV budget {args.kv_budget_gb} GB | K={args.K}\n")
 
-    res = {}
-    res["lru"] = replay(model, LRUPromptCache(max_size=1 << 30, max_bytes=budget), seqs, events)
-    time.sleep(args.cooldown)
-    res["causal"] = replay(model, CausalPromptCache(cm.prefill_ms, K=args.K, max_size=1 << 30,
-                                                    max_bytes=budget), seqs, events)
-    for name, m in res.items():
-        print(f"  {name:7s} | TTFT mean {m['mean_ttft']:8.1f}  p95 {m['p95_ttft']:9.1f} ms | "
-              f"recomputes {m['recomputes']:4d} | peak {m['peak_mb']:6.0f} MB")
-    lru, cz = res["lru"]["mean_ttft"], res["causal"]["mean_ttft"]
-    print(f"\n  causal vs LRU (real model): {(1 - cz/lru)*100:+.1f}% mean TTFT, "
-          f"{res['lru']['recomputes']-res['causal']['recomputes']:+d} recomputes")
-    print("  (sim Exp3: causal recovered 41-83% of the LRU->oracle gap. Real run validates")
-    print("   that the recompute-cost-aware eviction reduces TTFT/recomputes vs stock LRU.)")
+    def fmt(name, m):
+        return (f"  {name:11s} | TTFT mean {m['mean_ttft']:8.1f}  p95 {m['p95_ttft']:9.1f} ms | "
+                f"recomputes {m['recomputes']:4d} | peak {m['peak_mb']:6.0f} MB")
+
+    Ks = [float(x) for x in str(args.ks).split(",")]
+    res = {"lru": replay(model, LRUPromptCache(max_size=1 << 30, max_bytes=budget), seqs, events)}
+    print(fmt("lru", res["lru"]))
+    for K in Ks:
+        time.sleep(args.cooldown)
+        m = replay(model, CausalPromptCache(cm.prefill_ms, K=K, max_size=1 << 30,
+                                            max_bytes=budget), seqs, events)
+        res[f"causal_K{K:.0f}"] = m
+        print(fmt(f"causal_K{K:.0f}", m))
+    lru = res["lru"]["mean_ttft"]
+    print(f"\n  vs LRU (TTFT mean {lru:.0f}ms, recomputes {res['lru']['recomputes']}):")
+    for K in Ks:
+        m = res[f"causal_K{K:.0f}"]
+        print(f"    causal K={K:.0f}: {(1 - m['mean_ttft']/lru)*100:+5.1f}% TTFT, "
+              f"{res['lru']['recomputes'] - m['recomputes']:+d} recomputes  "
+              f"({'better' if m['mean_ttft'] < lru else 'WORSE'})")
+    print("  (Exp3 sim: causal beat LRU. Real model needs K >> reuse-distance to protect active")
+    print("   convs; small K thrashes (evicts active small convs -> recompute). Honest operating-point sweep.)")
 
 
 def main():
@@ -124,7 +133,7 @@ def main():
     ap.add_argument("--concurrency", type=int, default=8)
     ap.add_argument("--think-mean", type=float, default=12.0)
     ap.add_argument("--kv-budget-gb", type=float, default=1.5)
-    ap.add_argument("--K", type=float, default=12.0)
+    ap.add_argument("--ks", default="16,32,48", help="causal recency K sweep (K >> reuse-distance)")
     ap.add_argument("--cooldown", type=float, default=8.0)
     ap.add_argument("--mem-limit-gb", type=float, default=12.0)
     args = ap.parse_args()
