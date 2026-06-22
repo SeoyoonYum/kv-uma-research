@@ -97,7 +97,7 @@ def run(args):
     events = build_schedule(convs, args.concurrency, args.think_mean)
     budget = int(args.kv_budget_gb * 1e9)
     print(f"[exp2a] {len(events)} turn-events | concurrency {args.concurrency} | "
-          f"KV budget {args.kv_budget_gb} GB | K={args.K}\n")
+          f"KV budget {args.kv_budget_gb} GB | K-sweep={args.ks}\n")
 
     def fmt(name, m):
         return (f"  {name:11s} | TTFT mean {m['mean_ttft']:8.1f}  p95 {m['p95_ttft']:9.1f} ms | "
