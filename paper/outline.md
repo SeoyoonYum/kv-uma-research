@@ -1,13 +1,22 @@
-# Paper outline — KV-cache decision policy for single-pool unified memory
+# Paper outline — A Measurement Study of Unified-Memory LLM Inference under CPU/GPU Contention
 
+Working title: **"When CPU Traffic Changes KV-Cache Decisions: A Measurement Study of Unified-Memory LLM Inference"**
 Venue: **ML for Systems @ NeurIPS** (4-page extended abstract, non-archival → arXiv + main resubmit).
 Phase 1 = a complete measurement paper.
-Thesis: single-pool unified memory **re-derives** the KV-cache management *decision structure*;
-PCIe-era cost models (FlexGen LP, vLLM swap-vs-recompute) don't transfer. We measure this
-first at a controlled, mechanism level, re-derive the decision model, show current frameworks
-ignore it, and show a simple policy does NOT close the gap on the real engine → prediction is
-the real lever.  Arc: **measure → gap → contention asymmetry → policy gap → simple-policy limit → prediction needed.**
 
+NEW thesis (topic pivot 2026-06-23 #2): In single-pool UMA, **external CPU memory traffic creates an
+asymmetric interference channel** for LLM inference — decode is bandwidth-arbitration sensitive while
+prefill/recompute is comparatively compute-bound. This asymmetry **changes the cost model for KV-cache
+management** and makes static PCIe-era policies insufficient.
+Arc: **cost structure (setup) → contention asymmetry (MAIN) → it changes KV decisions → simple policy isn't enough → prediction/contention-aware needed.**
+
+> **TOPIC PIVOT (2026-06-23 #2, see RESEARCH §4).** Now a *measurement study* with **Finding 2 (CPU/GPU
+> contention asymmetry) as the paper's subject**, not a KV-policy paper. → **Sections below need reordering
+> on writing:** §5 (contention) becomes the spine/main; §3–4 (cost structure + crossover) demote to *setup/background*;
+> §6–7 (policy gap + Phase 2a) become the *KV-decision-implication + design-lesson* tail. Honest KV link: contention
+> *shifts* the keep-vs-recompute boundary (write as "must be modeled", not "fully reverses"); back it with the
+> planned α-sweep + contention A/B (EXPERIMENTS [P1]). The figure manifest stays valid; only section emphasis/order moves.
+>
 > **Framing re-centered (2026-06-23, see RESEARCH §4/§4b).** Novelty center of mass moved:
 > Finding 1 (eviction = forced recompute, 600–1,600×) → **background/premise** (Agent Memory
 > Below the Prompt, 2603.04428, is a published *ally* that co-establishes it; our delta = controlled
