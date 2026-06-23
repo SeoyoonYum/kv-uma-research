@@ -107,6 +107,7 @@ Writing happens in the strategy chat; this file is the scaffold + figure/result 
 - Offload lever degenerates (swap → forced recompute, ~600–1,587×, grows with size). — Exp1 + crossover + size sweep.
 - keep-vs-recompute N* differs from PCIe / N≈50, widens with model size. — crossover + size sweep.
 - New axis: CPU/GPU shared-bus contention is asymmetric (decode −38%, prefill immune; bandwidth not thermal; size-robust). — Exp2 + powermetrics A/B + prefill-contention + size sweep.
+- Not a STREAM artifact: realistic CPU patterns (memcpy/file-scan/random-gather) all slow decode 26–43% while prefill stays +4–6% immune; even low-bandwidth random gather (2 GB/s logical) cuts decode 29% (cache-line-amplified) → agent-side vector-search/RAG contends. — P2 (load-type A/B + refined 0→40% intensity sweep).
 - Contention's KV role is a decode ITL/throughput + admission-accounting tax, NOT an eviction-flipping axis (0/15,044 trace decisions flip; keep margin 3020×→2213×). — P1c (honest scoping).
 - The KV-decision divergence in UMA is the cost model itself: a PCIe-era eviction model mis-prices single-pool UMA (76–88% victim disagreement; +8%→+12,933% TTFT penalty, growing as budget gets adequate). — P1b.
 - Current frameworks leave a policy gap (oracle ≫ rotating/LRU; rotating drops 69% context). — Exp3 sim.
@@ -123,3 +124,4 @@ Writing happens in the strategy chat; this file is the scaffold + figure/result 
 | 6 | exp3_policygap_1.5B_20260622.png | per-policy metrics + causal recovery of LRU→oracle gap |
 | 7 | exp_phase2a_causal_vs_lru.png | real model: causal worse than LRU at every K (the limit) |
 | KV-link | exp_p1_kvlink_1.5B_20260623.png | P1a α-axis (no robust optimum) · P1b PCIe-vs-UMA penalty grows with budget (+8%→+130×) · P1c 0/15,044 contention flips |
+| 5 | exp_p2_loadtypes_1.5B_20260623.png | P2a refined 0→40% intensity sweep · P2b decode hit 26–43% / prefill immune across stream·memcpy·scan·random (not a STREAM artifact) |
