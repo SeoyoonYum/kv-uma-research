@@ -1,11 +1,24 @@
 # Paper outline — KV-cache decision policy for single-pool unified memory
 
-Venue: EuroMLSys workshop (#1) / MLArchSys (#2). Phase 1 = a complete measurement paper.
+Venue: **ML for Systems @ NeurIPS** (4-page extended abstract, non-archival → arXiv + main resubmit).
+Phase 1 = a complete measurement paper.
 Thesis: single-pool unified memory **re-derives** the KV-cache management *decision structure*;
 PCIe-era cost models (FlexGen LP, vLLM swap-vs-recompute) don't transfer. We measure this
 first at a controlled, mechanism level, re-derive the decision model, show current frameworks
 ignore it, and show a simple policy does NOT close the gap on the real engine → prediction is
 the real lever.  Arc: **measure → gap → contention asymmetry → policy gap → simple-policy limit → prediction needed.**
+
+> **Framing re-centered (2026-06-23, see RESEARCH §4/§4b).** Novelty center of mass moved:
+> Finding 1 (eviction = forced recompute, 600–1,600×) → **background/premise** (Agent Memory
+> Below the Prompt, 2603.04428, is a published *ally* that co-establishes it; our delta = controlled
+> measurement + model-size scaling 329→1,587× only). **Finding 2 (CPU↔GPU single-UMA-bus contention
+> asymmetry + KV-decision implication) = the center novelty** (empty after 3 novelty searches; the
+> novelty is the *combination* — external non-LLM CPU traffic × single pool × KV decision — not
+> "asymmetry" itself, which is red-ocean vs Nexus/DuetServe GPU-internal prefill↔decode). Finding 3
+> (prediction needed) → **motivation/future**, must cite datacenter priors (SAECache 2605.18825 etc.).
+> Realism defense for Finding 2: on-device LLMs share memory with agent tools/RAG/OS/preprocessing →
+> shared single-device use is UMA's *default operating mode*, so contention is not a corner case.
+> Prose stays in the strategy chat; section text below is the pre-re-centering scaffold — update on writing.
 
 All numbers below are measured on M4 MacBook Air (16 GB, fanless), MLX/mlx-lm 0.31, Qwen2.5-4bit.
 Writing happens in the strategy chat; this file is the scaffold + figure/result manifest.

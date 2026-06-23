@@ -19,28 +19,31 @@ PCIe 분리형 비용 모델(FlexGen LP, vLLM swap-vs-recompute)은 PCIe 티어 
 - keep-vs-recompute crossover N*이 PCIe 예측 및 하드웨어-무관 N≈50(KV-Direct)과 다르다.
 - 공유 버스의 CPU/GPU 대역폭 *경합*(Apple Silicon에서 미측정)이 N*을 더 이동시킨다.
 
-## 4. 포지셔닝 / 프레이밍 [개정 2026-06-21]
-논문 한 줄: 단일 풀 통합 메모리에선 KV 관리 *결정 구조*가 다르다 — offload 티어가 붕괴해 eviction이 강제 recompute가 되고(통제 측정 600~1600×, 모델 크기로 악화), PCIe엔 없던 새 축(CPU/GPU 버스 경합: decode −38%, recompute 면역)이 생긴다. 우리는 이를 처음으로 통제·메커니즘 수준에서 측정하고, PCIe 시대 비용 모델이 표현 못 하는 결정 모델로 재유도하며, 현행 프레임워크가 이를 무시함을 보인다.
+## 4. 포지셔닝 / 프레이밍 [재편 2026-06-23 — 노벨티 무게중심 이동]
+논문 한 줄: 단일 풀 통합 메모리에선 KV 복구 *결정 구조*가 다르다. **중심 노벨티 = 외부(비-LLM) CPU 작업과 GPU decode가 *단일 메모리 버스*를 다투는 경합의 비대칭(decode ~38% 타격 / recompute 면역; powermetrics로 발열 아닌 arbitration 확정)과 그 KV-복구 결정 함의(경합 시 결정이 recompute로 기움).**
 
-도입부 5비트:
-1. 동기: UMA는 떠오르는 패러다임(Apple 소비자 ↔ NVIDIA GH200/GB200). 지배 비용 모델(FlexGen LP, vLLM swap/recompute)은 PCIe 분리 티어 전제.
-2. 갭: 실무자는 UMA 메모리 압박이 recompute를 강제함을 안다(folklore/블로그). 그러나 통제 측정·메커니즘·비용 모델·정책 함의가 없다. (folklore를 명시적으로 인정하고 시작)
-3. 결과1(엄밀성): eviction-cost 붕괴를 체계적으로 측정 — 600~1600×, 모델 크기로 스케일. offload 옵션 퇴화.
-4. 결과2(신규, 전면): 미측정 효과 측정 — CPU/GPU 버스 경합(−38%, powermetrics로 발열 아님 확정) + recompute 면역 비대칭 = PCIe엔 없는 새 결정 축.
-5. 함의: 현행(rotating, recompute-default)은 이 구조 무시 → 정량 격차(Exp3) → UMA-native 정책 동기(Phase2).
+층 구조 (노벨티 무게중심):
+- [전제/background] UMA엔 swap 티어가 없어 eviction = 강제 recompute (600~1600×, 모델 크기로 329→1587× 악화). 기존 연구(Agent Memory Below the Prompt 2603.04428)와 *함께* 확립 — 반박 아닌 우군 인용; 우리 정밀화(통제 측정 + 모델-크기 스케일링)만 작게. 발견 1.
+- [중심 측정/노벨티] 발견 2 — CPU↔GPU 단일-UMA-버스 경합 비대칭 + 메커니즘(powermetrics A/B). 3회 노벨티 검색 후 비어 있음 확인.
+- [정책 함의] α-sweep(α-weighted drop_gain) + oracle PCIe-cost vs UMA-cost A/B → "경합 시 최적 정책이 recompute로 이동" + "UMA-cost와 PCIe-cost oracle이 다른 evict 결정"을 직접 증거화.
+- [동기/future] 단순 휴리스틱(causal) 실 엔진 실패 → reuse 예측 필요(SAECache 2605.18825 등 데이터센터 선례 인용). 발견 3 = 노벨티 아님.
+
+현실성 프레이밍 (발견 2 아킬레스건 방어, 중요): "LLM 전용" 기기면 CPU 한가 → 경합 드묾(한계 인정). 그러나 on-device LLM은 보통 에이전트 도구·RAG·OS·전처리와 메모리를 *공유*하며, 단일 기기 공유야말로 UMA의 *기본 운영 양식*(데이터센터의 GPU-전용 가정과 대비). → 경합은 코너케이스가 아니라 이 하드웨어의 자연 조건. (보강: 합성 STREAM 외 현실 동시 워크로드 재현 = 선택적 추가 실험.)
 
 기여:
-- 단일 풀 UMA의 KV 결정 공간 재유도(offload 퇴화 → keep-vs-recompute 환원).
-- eviction-as-recompute 비용의 첫 통제·모델스케일 측정(600~1600×, confound 분리).
-- Apple Silicon decode 중 CPU/GPU 버스 경합의 첫 측정 + 메커니즘 + recompute 면역 비대칭(actionable 정책 레버).
-- 현행 프레임워크가 이를 흘림(정책 격차).
+- 단일 풀 UMA의 KV 결정 공간 재유도(offload 퇴화 → keep-vs-recompute; 전제로 확립).
+- **(중심) CPU↔GPU 단일-UMA-버스 경합 비대칭의 첫 측정 + 메커니즘 + KV-복구 결정 함의.**
+- 정책 divergence 직접 측정(α-sweep + PCIe-vs-UMA-cost oracle A/B): "UMA에선 최적 결정이 PCIe와 다르다".
+- 단순 휴리스틱 한계 → 예측 필요(동기/future, 인용).
 
-folklore 위험 방어: 블로그/업계 논의 명시 인용 + "첫 체계적·통제·메커니즘 측정 + 비용 모델"로 포지셔닝; bare "비싸다" 대신 메커니즘+비용모델+경합 측정 앞세움; 모델 스케일링(329→1587×)·경합 비대칭을 비자명 결과로 강조.
+베뉴: ML for Systems @ NeurIPS (4쪽 extended abstract, non-archival) → arXiv 선공개 + 메인 재제출 가능.
 
-## 4b. 노벨티 / 관련연구 델타
-- folklore(인용): backend.ai / touchdown-labs / min.io 블로그(eviction→recompute, UMA working-set), arXiv 2605.05699(UMA bandwidth 역전, quant).
-- 인접·대조: arXiv 2501.16909(NVIDIA GPU 내부 대역폭 간섭, 다른 setting), arXiv 2508.08531(Apple Silicon 단일워크로드 대역폭 프로파일), KVSwap 2511.11907(on-device disk offload), vllm-mlx 2601.19139(UMA 서빙, generic LRU), Learning-to-Evict 2602.10238(하드웨어-무관 RL eviction — 하드웨어-인지 피벗 시 경쟁).
-- 우리 델타: 통제 측정 + CPU/GPU 버스 경합 비대칭 + no-PCIe 결정 모델 재유도.
+## 4b. 노벨티 / 관련연구 델타 [재편 2026-06-23]
+발견 2의 정확한 경계 — 새로움은 *조합*이지 "비대칭" 자체가 아님:
+- ❌ 레드오션: decode=대역폭-bound / GPU 내부 prefill↔decode 경합(Nexus 2507.06608·DuetServe 2511.04791·Sarathi·DistServe) / multi-GPU CPU 병목(2603.22774, 제어경로지 대역폭 아님=다른 메커니즘) / Apple Silicon 단일워크로드 프로파일(POMACS 2508.08531).
+- ✅ 우리 것: **외부(비-LLM) CPU 메모리 트래픽 ↔ GPU decode가 단일 UMA 버스 경합 → decode ~38% 둔화·recompute 면역(비대칭) → powermetrics로 발열 아닌 arbitration 확정 → KV 복구 결정을 recompute로 기울임.** 이 조합(경합 주체 × 단일 풀 하드웨어 × KV 결정 함의)이 미발표.
+- 전제 우군: Agent Memory Below the Prompt(2603.04428, UMA evict=recompute), When Quant Is Free(2605.05699), DBMS preemption(2411.07447).
+- 발견 3 동기(데이터센터 선점): SAECache(2605.18825), KVCache-in-Wild(2506.02634), RLT/LBGR(2601.18999).
 
 ## 5. 하드웨어 (실험 플랫폼이자 연구 대상)
 - M4 MacBook Air, 16GB 통합 메모리, 10코어(4P+6E), ~120GB/s, 팬리스.
@@ -73,7 +76,10 @@ folklore 위험 방어: 블로그/업계 논의 명시 인용 + "첫 체계적·
 - [x] **Phase 1 측정 GO** + 프레이밍 확정(2026-06-21): ②경합 비대칭을 전면 empirical로, ①eviction은 folklore의 첫 통제 정량화로 포지셔닝.
 - [ ] 마무리 측정: 7B@8192 클린 1점, 경합 곡선 크기 sweep(+큰모델 KV대역폭 비효율 미니조사).
 - [~] Exp 3 (정책 격차) — 다중 시퀀스 eviction 모델(가변 think-time) + online causal 휴리스틱, **실 ShareGPT(5k convs) 측정**. oracle 14.96<causal<lru 15.71<always_recompute 16.46s TTFT. **causal(예지 없음)이 LRU→oracle 격차의 44–75%(K=8–32) 회수 → 달성 가능성 입증(강).** rotating(기본)은 실 multiturn서 ctx 31%만 유지. spec 2곳 정합성 수정(oracle=ever-reused 이진, causal=exp(−idle/K) smooth) **챗 OK 필요**. budget robustness 확인됨(2/6GB 모두 LRU→oracle 41–83% 회수). vllm-metal 비교군=실엔진 보류(Docker-Mac Metal 패스스루 불가; 시뮬 lru가 proxy).
-- [~] Phase 2a (causal 실 구현) — `policy/causal_cache.py`: mlx-lm `LRUPromptCache` 서브클래스, eviction victim을 drop_gain으로 교체(baseline=미변경 LRUPromptCache 실코드). 스모크 통과(eviction 트리거+victim=argmax drop_gain, stock LRU와 다름). 다음: 환경통제(앱 종료·free% 기록)+필터 ShareGPT×동시성 실측 → 실측 회수율 vs 시뮬(50~92%). 7B@8192 throttle 문서화·경합 크기-무관 마무리 측정 완료.
+- [x] Phase 2a (causal 실 구현) — `policy/causal_cache.py`: mlx-lm `LRUPromptCache` 서브클래스, eviction victim을 drop_gain으로 교체(baseline=미변경 LRUPromptCache). 실 1.5B×ShareGPT×KV budget에서 **causal이 LRU 미달(모든 K, K↑일수록 악화)** = 정직한 negative. 진단: keep_ms≪recompute → drop_gain이 작은(싸게 recompute) conv 축출 → 작은 메모리 해제 → eviction churn. 발견 3개: (a) 단순 recency+recompute 휴리스틱 한계, (b) 시뮬-실측 갭(비용모델 과대평가), (c) reuse 예측이 본질적(예지 oracle만 LRU 능가). → 결과 섹션에 포함.
+- **[x] 노벨티 재편(2026-06-23) — 무게중심 이동.** 발견1(eviction=recompute) → *전제/background* 강등(Agent Memory 2603.04428 published 선점; 우군 인용, 우리 정밀화 329→1587×만 작게). **발견2(CPU↔GPU UMA 버스 경합 비대칭+KV함의) → 중심 노벨티 격상**(3회 검색 후 비어있음 확인; 단 "비대칭"은 레드오션, 새로움=조합). 발견3 → *동기/future*(SAECache 등 데이터센터 선점, 인용). 발견2 현실성 프레이밍 = on-device LLM은 에이전트/RAG/OS/전처리와 메모리 공유 → 단일기기 공유가 UMA 기본 양식 → 경합은 코너케이스 아님. (RESEARCH §4/§4b, RELATED_WORK, DECISIONS 반영.)
+- **[x] 베뉴 확정 = ML for Systems @ NeurIPS** (4쪽 extended abstract, non-archival, ~8월말 마감 추정). non-archival → arXiv 선공개 + 메인 재제출 가능.
+- [ ] **다음 핸드오프(실험)** — α-weighted drop_gain α∈[0,1] sweep + oracle PCIe-cost vs UMA-cost A/B(정책 divergence 직접 측정) + 현실 동시 워크로드 보강(합성 STREAM 외). *이번 턴은 문서만, 측정 코드·결과 미변경.*
 - [ ] arXiv/Semantic Scholar 알림 설정. 제출 직전 노벨티 재검증.
 - [ ] 랩 컨택(한동수/박경수) — GO+측정 들고.
 
