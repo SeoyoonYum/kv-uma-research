@@ -14,8 +14,14 @@ Arc: **cost structure (setup) → contention asymmetry (MAIN) → it changes KV 
 > contention asymmetry) as the paper's subject**, not a KV-policy paper. → **Sections below need reordering
 > on writing:** §5 (contention) becomes the spine/main; §3–4 (cost structure + crossover) demote to *setup/background*;
 > §6–7 (policy gap + Phase 2a) become the *KV-decision-implication + design-lesson* tail. Honest KV link: contention
-> *shifts* the keep-vs-recompute boundary (write as "must be modeled", not "fully reverses"); back it with the
-> planned α-sweep + contention A/B (EXPERIMENTS [P1]). The figure manifest stays valid; only section emphasis/order moves.
+> *shifts* the keep-vs-recompute boundary (write as "must be modeled", not "fully reverses").
+> **P1 measured this (2026-06-23, src/exp_p1_kvlink.py, fig exp_p1_kvlink_1.5B):** contention does NOT flip
+> eviction (0/15,044 trace decisions; keep margin 3020×→2213×) — its KV role is decode ITL/throughput +
+> admission *accounting*, not eviction. The KV-decision divergence that IS large is the **UMA-vs-PCIe cost
+> model** (P1b: 76–88% victim disagreement; +8%→+12,933% TTFT penalty growing with budget adequacy) — i.e.
+> the swap-tier collapse, elevated to a decision result. So the KV-decision section is carried by P1b
+> (cost-model mismatch), and contention (Exp2) is the measurement centerpiece with an honest ITL/accounting
+> KV corollary. The figure manifest gains exp_p1_kvlink_1.5B; section emphasis/order moves.
 >
 > **Framing re-centered (2026-06-23, see RESEARCH §4/§4b).** Novelty center of mass moved:
 > Finding 1 (eviction = forced recompute, 600–1,600×) → **background/premise** (Agent Memory
@@ -101,8 +107,10 @@ Writing happens in the strategy chat; this file is the scaffold + figure/result 
 - Offload lever degenerates (swap → forced recompute, ~600–1,587×, grows with size). — Exp1 + crossover + size sweep.
 - keep-vs-recompute N* differs from PCIe / N≈50, widens with model size. — crossover + size sweep.
 - New axis: CPU/GPU shared-bus contention is asymmetric (decode −38%, prefill immune; bandwidth not thermal; size-robust). — Exp2 + powermetrics A/B + prefill-contention + size sweep.
+- Contention's KV role is a decode ITL/throughput + admission-accounting tax, NOT an eviction-flipping axis (0/15,044 trace decisions flip; keep margin 3020×→2213×). — P1c (honest scoping).
+- The KV-decision divergence in UMA is the cost model itself: a PCIe-era eviction model mis-prices single-pool UMA (76–88% victim disagreement; +8%→+12,933% TTFT penalty, growing as budget gets adequate). — P1b.
 - Current frameworks leave a policy gap (oracle ≫ rotating/LRU; rotating drops 69% context). — Exp3 sim.
-- A simple recency+recompute policy does NOT close it on the real engine → prediction is the lever. — Phase 2a (honest negative).
+- A simple recency+recompute policy does NOT close it on the real engine → prediction is the lever. — Phase 2a (honest negative); recency↔recompute α-axis has no robust optimum — P1a.
 
 ## Figure manifest (results/figures/)
 | paper § | figure | shows |
@@ -114,3 +122,4 @@ Writing happens in the strategy chat; this file is the scaffold + figure/result 
 | 5 | (asymmetry / size: exp2pf_*, exp2_{0.5,3,7B}_*) | prefill-immune vs decode-hit; ~40% size-robust |
 | 6 | exp3_policygap_1.5B_20260622.png | per-policy metrics + causal recovery of LRU→oracle gap |
 | 7 | exp_phase2a_causal_vs_lru.png | real model: causal worse than LRU at every K (the limit) |
+| KV-link | exp_p1_kvlink_1.5B_20260623.png | P1a α-axis (no robust optimum) · P1b PCIe-vs-UMA penalty grows with budget (+8%→+130×) · P1c 0/15,044 contention flips |
