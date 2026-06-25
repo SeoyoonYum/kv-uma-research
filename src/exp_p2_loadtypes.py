@@ -24,6 +24,7 @@ import csv
 import json
 import os
 import platform
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -38,32 +39,91 @@ from exp2_contention import build_cache, decode_throughput    # noqa: E402
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CSV_DIR = os.path.join(REPO, "results", "csv")
 FIG_DIR = os.path.join(REPO, "results", "figures")
-MODES = ["stream", "memcpy", "scan", "random"]
+MODES = ["stream", "memcpy", "scan", "random", "rag"]   # rag = realistic RAG sidecar (Python)
+RAG_SIDECAR = os.path.join(REPO, "src", "rag_sidecar.py")
+
+
+class RagSidecarLoad:
+    """Drives src/rag_sidecar.py with the same start()/wait() contract as cpuload.CpuBandwidthLoad,
+    so the P2 harness launches/stops it identically to the C loads. start() BLOCKS until the sidecar
+    prints `READY` (one-time index/mmap setup done, so it is excluded from the measured window);
+    wait() collects the logical `GBPS` line. rag has no duty knob: intensity 0 = off, >0 = on."""
+
+    def __init__(self, intensity_pct, seconds=3.5):
+        self.intensity = float(intensity_pct)
+        self.seconds = float(seconds)
+        self.proc = None
+        self.gbps = 0.0
+        self.raw = ""
+        self.path = "-"
+
+    def start(self):
+        if self.intensity <= 0:
+            return self
+        self.proc = subprocess.Popen([sys.executable, RAG_SIDECAR, f"{self.seconds}"],
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        while True:                                  # wait for setup to finish (READY)
+            line = self.proc.stdout.readline()
+            if line == "":                           # EOF before READY -> setup failed
+                break
+            if line.startswith("READY"):
+                p = line.split()
+                self.path = p[1] if len(p) > 1 else "?"
+                break
+        return self
+
+    def running(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def wait(self):
+        if self.proc is None:
+            return 0.0
+        self.raw, _ = self.proc.communicate()
+        for line in (self.raw or "").splitlines():
+            if line.startswith("GBPS"):
+                self.gbps = float(line.split()[1])
+        return self.gbps
+
+    def stop(self):
+        if self.running():
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=5)
+            except Exception:
+                self.proc.kill()
+        return self.gbps
+
+
+def make_load(mode, intensity, seconds):
+    """C memory-pattern load (stream/memcpy/scan/random) or the Python RAG sidecar (rag)."""
+    if mode == "rag":
+        return RagSidecarLoad(intensity, seconds=seconds)
+    return cpuload.CpuBandwidthLoad(intensity, seconds=seconds, mode=mode)
 
 
 def decode_under(model, N, window_s, intensity, mode):
     """Decode tok/s on a freshly built N-cache under a CPU load of `mode` at `intensity`%."""
     cache = build_cache(model, N)
-    load = cpuload.CpuBandwidthLoad(intensity, seconds=0.5 + window_s + 0.8, mode=mode).start()
+    load = make_load(mode, intensity, seconds=0.5 + window_s + 0.8).start()
     if intensity > 0:
         time.sleep(0.5)                          # let the load ramp before timing
     r = decode_throughput(model, cache, window_s=window_s)
     gbps = load.wait()
     del cache
     measure.free_buffers()
-    return r["tok_s"], gbps, r["throttle"], r["ms_per_step"]
+    return r["tok_s"], gbps, r["throttle"], r["ms_per_step"], getattr(load, "path", "-")
 
 
 def prefill_under(model, N, reps, intensity, mode, pf_solo_ms):
     """Median prefill_ms of N tokens while a `mode` load at `intensity`% runs. Load sized to
     cover (1 warmup + reps) prefills with margin (mirrors exp2_prefill_contention)."""
     load_s = round(0.5 + (1 + reps) * (pf_solo_ms / 1000.0) * 1.5 + 1.0, 1)
-    load = cpuload.CpuBandwidthLoad(intensity, seconds=load_s, mode=mode).start()
+    load = make_load(mode, intensity, seconds=load_s).start()
     if intensity > 0:
         time.sleep(0.5)
     ms = float(np.median(measure.time_prefill(model, N, reps=reps, warmup=1)))
     gbps = load.wait()
-    return ms, gbps
+    return ms, gbps, getattr(load, "path", "-")
 
 
 def run(args):
@@ -88,7 +148,7 @@ def run(args):
     print(f"\n[P2a] intensity sweep (stream), N={N}: {intens}")
     a_rows, base_tok = [], None
     for it in intens:
-        tok, gbps, thr, msps = decode_under(model, N, args.window_s, it, "stream")
+        tok, gbps, thr, msps, _ = decode_under(model, N, args.window_s, it, "stream")
         if it == 0:
             base_tok = tok
         slow = (1 - tok / base_tok) * 100 if base_tok else 0.0
@@ -104,14 +164,14 @@ def run(args):
     print(f"\n[P2b] load-type A/B at {args.duty}% duty, N={N} (decode vs prefill per pattern)")
     pf_solo = float(np.median(measure.time_prefill(model, N, reps=args.reps, warmup=1)))
     time.sleep(args.cooldown)
-    dec_solo, _, _, _ = decode_under(model, N, args.window_s, 0, "stream")
+    dec_solo, _, _, _, _ = decode_under(model, N, args.window_s, 0, "stream")
     time.sleep(args.cooldown)
     print(f"  solo: prefill {pf_solo:.0f} ms | decode {dec_solo:.1f} tok/s")
     b_rows = []
     for mode in MODES:
-        pf_load, gpf = prefill_under(model, N, args.reps, args.duty, mode, pf_solo)
+        pf_load, gpf, ppath = prefill_under(model, N, args.reps, args.duty, mode, pf_solo)
         time.sleep(args.cooldown)
-        dtok, gdec, thr, _ = decode_under(model, N, args.window_s, args.duty, mode)
+        dtok, gdec, thr, _, dpath = decode_under(model, N, args.window_s, args.duty, mode)
         time.sleep(args.cooldown)
         pf_slow = (pf_load / pf_solo - 1) * 100        # prefill ms UP
         dec_slow = (1 - dtok / dec_solo) * 100         # decode tok/s DOWN
@@ -119,9 +179,11 @@ def run(args):
                            cpu_gbps_pf=round(gpf, 2), prefill_solo_ms=round(pf_solo, 1),
                            prefill_load_ms=round(pf_load, 1), prefill_slow_pct=round(pf_slow, 1),
                            decode_solo_toks=round(dec_solo, 1), decode_load_toks=round(dtok, 1),
-                           decode_slow_pct=round(dec_slow, 1), decode_throttle=round(thr, 3)))
+                           decode_slow_pct=round(dec_slow, 1), decode_throttle=round(thr, 3),
+                           load_path=dpath))
+        ptag = f" | {dpath}" if dpath not in ("-", None) else ""
         print(f"  {mode:7s} | cpu(dec) {gdec:6.1f} GB/s | prefill {pf_slow:+5.1f}% | "
-              f"decode {dec_slow:5.1f}% slower")
+              f"decode {dec_slow:5.1f}% slower{ptag}")
 
     _save(a_rows, b_rows, args, cfg, N)
     _analyze(a_rows, b_rows)
@@ -153,8 +215,9 @@ def _analyze(a_rows, b_rows):
           f"@ {top['cpu_gbps']:.0f} GB/s (stream).")
     print("P2b (load types) decode slowdown / prefill slowdown @ full duty:")
     for r in b_rows:
+        tag = f"  [{r.get('load_path')}]" if r.get("load_path") not in ("-", None) else ""
         print(f"  {r['mode']:7s}: decode {r['decode_slow_pct']:5.1f}% slower | "
-              f"prefill {r['prefill_slow_pct']:+5.1f}% | (cpu {r['cpu_gbps_dec']:.0f} GB/s)")
+              f"prefill {r['prefill_slow_pct']:+5.1f}% | (cpu {r['cpu_gbps_dec']:.0f} GB/s){tag}")
     seq = [r for r in b_rows if r["mode"] in ("stream", "memcpy", "scan")]
     print(f"  => sequential patterns (stream/memcpy/scan, {min(r['cpu_gbps_dec'] for r in seq):.0f}-"
           f"{max(r['cpu_gbps_dec'] for r in seq):.0f} GB/s) all slow decode "
