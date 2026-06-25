@@ -1,0 +1,6 @@
+mode,duty_pct,cpu_gbps_dec,cpu_gbps_pf,prefill_solo_ms,prefill_load_ms,prefill_slow_pct,decode_solo_toks,decode_load_toks,decode_slow_pct,decode_throttle,load_path
+stream,100,70.16,89.02,1964.8,2046.3,4.1,82.7,48.7,41.1,1.029,-
+memcpy,100,57.85,80.68,1964.8,2038.4,3.7,82.7,47.4,42.7,1.061,-
+scan,100,47.6,63.47,1964.8,2056.8,4.7,82.7,64.3,22.3,1.136,-
+random,100,2.39,2.56,1964.8,2130.0,8.4,82.7,59.3,28.3,1.313,-
+rag,100,14.42,20.98,1964.8,2167.9,10.3,82.7,68.3,17.4,1.041,faiss-ivf
